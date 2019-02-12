@@ -97,8 +97,6 @@ func TestNewAgent(t *testing.T) {
 	assert.NotNil(t, ag)
 	assert.IsType(t, make(chan struct{}), ag.chDie)
 	assert.IsType(t, make(chan pendingMessage), ag.chSend)
-	assert.IsType(t, make(chan struct{}), ag.chStopHeartbeat)
-	assert.IsType(t, make(chan struct{}), ag.chStopWrite)
 	assert.Equal(t, dieChan, ag.appDieChan)
 	assert.Equal(t, 10, ag.messagesBufferSize)
 	assert.Equal(t, mockConn, ag.conn)
@@ -425,16 +423,10 @@ func TestAgentClose(t *testing.T) {
 	assert.NoError(t, err)
 
 	// validate channels are closed
-	stopWrite := false
-	stopHeartbeat := false
 	die := false
 	go func() {
 		for {
 			select {
-			case <-ag.chStopWrite:
-				stopWrite = true
-			case <-ag.chStopHeartbeat:
-				stopHeartbeat = true
 			case <-ag.chDie:
 				die = true
 			}
@@ -448,8 +440,8 @@ func TestAgentClose(t *testing.T) {
 	assert.Equal(t, ag.state, constants.StatusClosed)
 	assert.True(t, expected)
 	helpers.ShouldEventuallyReturn(
-		t, func() bool { return stopWrite && stopHeartbeat && die },
-		true, 50*time.Millisecond, 500*time.Millisecond)
+		t, func() bool { return die },
+		true, 20*time.Millisecond, 500*time.Millisecond)
 }
 
 func TestAgentRemoteAddr(t *testing.T) {

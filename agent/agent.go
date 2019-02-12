@@ -63,18 +63,17 @@ type (
 		appDieChan         chan bool           // app die channel
 		chDie              chan struct{}       // wait for close
 		chSend             chan pendingMessage // push message queue
-		chStopHeartbeat    chan struct{}       // stop heartbeats
-		chStopWrite        chan struct{}       // stop writing messages
+		closeMutex         sync.Mutex
 		conn               net.Conn            // low-level conn fd
 		decoder            codec.PacketDecoder // binary decoder
 		encoder            codec.PacketEncoder // binary encoder
 		heartbeatTimeout   time.Duration
-		lastAt             int64                // last heartbeat unix time stamp
-		messagesBufferSize int                  // size of the pending messages buffer
+		lastAt             int64 // last heartbeat unix time stamp
+		messageEncoder     message.Encoder
+		messagesBufferSize int // size of the pending messages buffer
+		metricsReporters   []metrics.Reporter
 		serializer         serialize.Serializer // message serializer
 		state              int32                // current agent state
-		messageEncoder     message.Encoder
-		metricsReporters   []metrics.Reporter
 	}
 
 	pendingMessage struct {
@@ -109,8 +108,6 @@ func NewAgent(
 		chDie:              make(chan struct{}),
 		chSend:             make(chan pendingMessage, messagesBufferSize),
 		messagesBufferSize: messagesBufferSize,
-		chStopHeartbeat:    make(chan struct{}),
-		chStopWrite:        make(chan struct{}),
 		conn:               conn,
 		decoder:            packetDecoder,
 		encoder:            packetEncoder,
@@ -193,6 +190,8 @@ func (a *Agent) ResponseMID(ctx context.Context, mid uint, v interface{}, isErro
 // Close closes the agent, cleans inner state and closes low-level connection.
 // Any blocked Read or Write operations will be unblocked and return errors.
 func (a *Agent) Close() error {
+	a.closeMutex.Lock()
+	defer a.closeMutex.Unlock()
 	if a.GetStatus() == constants.StatusClosed {
 		return constants.ErrCloseClosedSession
 	}
@@ -206,8 +205,6 @@ func (a *Agent) Close() error {
 	case <-a.chDie:
 		// expect
 	default:
-		close(a.chStopWrite)
-		close(a.chStopHeartbeat)
 		close(a.chDie)
 		onSessionClosed(a.Session)
 	}
@@ -307,8 +304,6 @@ func (a *Agent) heartbeat() {
 			}
 		case <-a.chDie:
 			return
-		case <-a.chStopHeartbeat:
-			return
 		}
 	}
 }
@@ -401,7 +396,7 @@ func (a *Agent) write() {
 			if data.typ == message.Response {
 				metrics.ReportTimingFromCtx(data.ctx, a.metricsReporters, handlerType, m.Err)
 			}
-		case <-a.chStopWrite:
+		case <-a.chDie:
 			return
 		}
 	}
